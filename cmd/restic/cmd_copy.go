@@ -116,7 +116,7 @@ func runCopy(opts CopyOptions, gopts GlobalOptions, args []string) error {
 			Printf("Snapshot %s already exists, skipped\n", sn.ID().Str())
 			continue
 		}
-		debug.Log("non-existence assurred")
+		debug.Log("non-existence assured")
 		Verbosef("  copy started, this may take a while...\n")
 
 		if err := copySnapshot(ctx, srcRepo, dstRepo, *sn.Tree); err != nil {
@@ -175,34 +175,33 @@ func copySnapshot(ctx context.Context, srcRepo, dstRepo restic.Repository, treeI
 				return err
 			}
 		}
-		if len(entry.Content) != 0 {
-			// Copy the blobs for this file.
-			for _, blobid := range entry.Content {
-				// Do we already have this data blob?
-				if !dstRepo.Index().Has(blobid, restic.DataBlob) {
-					debug.Log("Copying blob %s\n", blobid.Str())
-					size, found := srcRepo.LookupBlobSize(blobid, restic.DataBlob)
-					if !found {
-						return fmt.Errorf("LookupBlobSize(%v) failed.", blobid)
-					}
-					buf := restic.NewBlobBuffer(int(size))
-					n, err := srcRepo.LoadBlob(ctx, restic.DataBlob, blobid, buf)
-					if err != nil {
-						return fmt.Errorf("LoadBlob(%v) returned error %v", blobid, err)
-					}
-					if n != len(buf) {
-						return fmt.Errorf("wrong number of bytes read, want %d, got %d", len(buf), n)
-					}
+		// Copy the blobs for this file.
+		for _, blobid := range entry.Content {
+			// Do we already have this data blob?
+			if dstRepo.Index().Has(blobid, restic.DataBlob) {
+				continue
+			}
+			debug.Log("Copying blob %s\n", blobid.Str())
+			size, found := srcRepo.LookupBlobSize(blobid, restic.DataBlob)
+			if !found {
+				return fmt.Errorf("LookupBlobSize(%v) failed.", blobid)
+			}
+			buf := restic.NewBlobBuffer(int(size))
+			n, err := srcRepo.LoadBlob(ctx, restic.DataBlob, blobid, buf)
+			if err != nil {
+				return fmt.Errorf("LoadBlob(%v) returned error %v", blobid, err)
+			}
+			if n != len(buf) {
+				return fmt.Errorf("wrong number of bytes read, want %d, got %d", len(buf), n)
+			}
 
-					newblobid, err := dstRepo.SaveBlob(ctx, restic.DataBlob, buf, blobid)
-					if err != nil {
-						return fmt.Errorf("SaveBlob(%v) returned error %v", blobid, err)
-					}
-					// Assurance only.
-					if newblobid != blobid {
-						return fmt.Errorf("SaveBlob(%v) returned unexpected id %s", blobid.Str(), newblobid.Str())
-					}
-				}
+			newblobid, err := dstRepo.SaveBlob(ctx, restic.DataBlob, buf, blobid)
+			if err != nil {
+				return fmt.Errorf("SaveBlob(%v) returned error %v", blobid, err)
+			}
+			// Assurance only.
+			if newblobid != blobid {
+				return fmt.Errorf("SaveBlob(%v) returned unexpected id %s", blobid.Str(), newblobid.Str())
 			}
 		}
 	}
