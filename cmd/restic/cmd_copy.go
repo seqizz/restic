@@ -97,26 +97,18 @@ func runCopy(opts CopyOptions, gopts GlobalOptions, args []string) error {
 		return err
 	}
 
-	Verbosef("Loading source index\n")
+	debug.Log("Loading source index")
 	if err := srcRepo.LoadIndex(ctx); err != nil {
 		return err
 	}
 
-	Verbosef("Loading destination index\n")
+	debug.Log("Loading destination index")
 	if err := dstRepo.LoadIndex(ctx); err != nil {
 		return err
 	}
 
 	for sn := range FindFilteredSnapshots(ctx, srcRepo, opts.Host, opts.Tags, opts.Paths, args) {
 		Verbosef("snapshot %s of %v at %s)\n", sn.ID().Str(), sn.Paths, sn.Time)
-
-		// TODO(): don't think this is sufficient, we prob need to iterate over
-		// the existing snapshots and do a full equivalance check.
-		if dstRepo.Index().Has(*sn.Tree, restic.TreeBlob) {
-			Printf("Snapshot %s already exists, skipped\n", sn.ID().Str())
-			continue
-		}
-		debug.Log("non-existence assured")
 		Verbosef("  copy started, this may take a while...\n")
 
 		if err := copySnapshot(ctx, srcRepo, dstRepo, *sn.Tree); err != nil {
@@ -143,7 +135,7 @@ func runCopy(opts CopyOptions, gopts GlobalOptions, args []string) error {
 		if err != nil {
 			return err
 		}
-		debug.Log("saved snapshot %v", newid.Str())
+		Verbosef("snapshot %s saved\n", newid.Str())
 	}
 	return nil
 }
