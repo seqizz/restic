@@ -33,7 +33,7 @@ type CopyOptions struct {
 	PasswordCommand string
 	KeyHint         string
 	Password        string
-	Host            []string
+	Hosts           []string
 	Tags            restic.TagLists
 	Paths           []string
 }
@@ -49,7 +49,7 @@ func init() {
 	f.StringVarP(&copyOptions.KeyHint, "key-hint2", "", os.Getenv("RESTIC_KEY_HINT2"), "key ID of key to try decrypting the destination repository first (default: $RESTIC_KEY_HINT2)")
 	f.StringVarP(&copyOptions.PasswordCommand, "password-command2", "", os.Getenv("RESTIC_PASSWORD_COMMAND2"), "specify a shell command to obtain a password for the destination repository (default: $RESTIC_PASSWORD_COMMAND2)")
 
-	f.StringArrayVarP(&tagOptions.Hosts, "host", "H", nil, "only consider snapshots for this `host`, when no snapshot ID is given (can be specified multiple times)")
+	f.StringArrayVarP(&copyOptions.Hosts, "host", "H", nil, "only consider snapshots for this `host`, when no snapshot ID is given (can be specified multiple times)")
 	f.Var(&copyOptions.Tags, "tag", "only consider snapshots which include this `taglist`, when no snapshot-ID is given")
 	f.StringArrayVar(&copyOptions.Paths, "path", nil, "only consider snapshots which include this (absolute) `path`, when no snapshot-ID is given")
 }
@@ -62,6 +62,7 @@ func runCopy(opts CopyOptions, gopts GlobalOptions, args []string) error {
 	dstGopts := gopts
 	dstGopts.Repo = opts.Repo
 	dstGopts.PasswordFile = opts.PasswordFile
+	dstGopts.PasswordCommand = opts.PasswordCommand
 	dstGopts.KeyHint = opts.KeyHint
 	dstGopts.password, err = resolvePassword(dstGopts, "RESTIC_PASSWORD2")
 	if err != nil {
@@ -107,7 +108,7 @@ func runCopy(opts CopyOptions, gopts GlobalOptions, args []string) error {
 		return err
 	}
 
-	for sn := range FindFilteredSnapshots(ctx, srcRepo, opts.Host, opts.Tags, opts.Paths, args) {
+	for sn := range FindFilteredSnapshots(ctx, srcRepo, opts.Hosts, opts.Tags, opts.Paths, args) {
 		Verbosef("snapshot %s of %v at %s)\n", sn.ID().Str(), sn.Paths, sn.Time)
 		Verbosef("  copy started, this may take a while...\n")
 
@@ -129,13 +130,13 @@ func runCopy(opts CopyOptions, gopts GlobalOptions, args []string) error {
 		debug.Log("saved index")
 
 		// save snapshot
-		sn.Parent = nil   // does Parent have relevance in the new repo?
-		sn.Original = nil // does Original have relevance in the new repo?
-		newid, err := dstRepo.SaveJSONUnpacked(ctx, restic.SnapshotFile, sn)
+		sn.Parent = nil   // Parent does not have relevance in the new repo.
+		sn.Original = nil // Original does not have relevance in the new repo.
+		newID, err := dstRepo.SaveJSONUnpacked(ctx, restic.SnapshotFile, sn)
 		if err != nil {
 			return err
 		}
-		Verbosef("snapshot %s saved\n", newid.Str())
+		Verbosef("snapshot %s saved\n", newID.Str())
 	}
 	return nil
 }
@@ -147,13 +148,13 @@ func copySnapshot(ctx context.Context, srcRepo, dstRepo restic.Repository, treeI
 	}
 	// Do we already have this tree blob?
 	if !dstRepo.Index().Has(treeID, restic.TreeBlob) {
-		newtreeid, err := dstRepo.SaveTree(ctx, tree)
+		newTreeID, err := dstRepo.SaveTree(ctx, tree)
 		if err != nil {
 			return fmt.Errorf("SaveTree(%v) returned error %v", treeID.Str(), err)
 		}
 		// Assurance only.
-		if newtreeid != treeID {
-			return fmt.Errorf("SaveTree(%v) returned unexpected id %s", treeID.Str(), newtreeid.Str())
+		if newTreeID != treeID {
+			return fmt.Errorf("SaveTree(%v) returned unexpected id %s", treeID.Str(), newTreeID.Str())
 		}
 	}
 
@@ -168,32 +169,32 @@ func copySnapshot(ctx context.Context, srcRepo, dstRepo restic.Repository, treeI
 			}
 		}
 		// Copy the blobs for this file.
-		for _, blobid := range entry.Content {
+		for _, blobID := range entry.Content {
 			// Do we already have this data blob?
-			if dstRepo.Index().Has(blobid, restic.DataBlob) {
+			if dstRepo.Index().Has(blobID, restic.DataBlob) {
 				continue
 			}
-			debug.Log("Copying blob %s\n", blobid.Str())
-			size, found := srcRepo.LookupBlobSize(blobid, restic.DataBlob)
+			debug.Log("Copying blob %s\n", blobID.Str())
+			size, found := srcRepo.LookupBlobSize(blobID, restic.DataBlob)
 			if !found {
-				return fmt.Errorf("LookupBlobSize(%v) failed.", blobid)
+				return fmt.Errorf("LookupBlobSize(%v) failed", blobID)
 			}
 			buf := restic.NewBlobBuffer(int(size))
-			n, err := srcRepo.LoadBlob(ctx, restic.DataBlob, blobid, buf)
+			n, err := srcRepo.LoadBlob(ctx, restic.DataBlob, blobID, buf)
 			if err != nil {
-				return fmt.Errorf("LoadBlob(%v) returned error %v", blobid, err)
+				return fmt.Errorf("LoadBlob(%v) returned error %v", blobID, err)
 			}
 			if n != len(buf) {
 				return fmt.Errorf("wrong number of bytes read, want %d, got %d", len(buf), n)
 			}
 
-			newblobid, err := dstRepo.SaveBlob(ctx, restic.DataBlob, buf, blobid)
+			newBlobID, err := dstRepo.SaveBlob(ctx, restic.DataBlob, buf, blobID)
 			if err != nil {
-				return fmt.Errorf("SaveBlob(%v) returned error %v", blobid, err)
+				return fmt.Errorf("SaveBlob(%v) returned error %v", blobID, err)
 			}
 			// Assurance only.
-			if newblobid != blobid {
-				return fmt.Errorf("SaveBlob(%v) returned unexpected id %s", blobid.Str(), newblobid.Str())
+			if newBlobID != blobID {
+				return fmt.Errorf("SaveBlob(%v) returned unexpected id %s", blobID.Str(), newBlobID.Str())
 			}
 		}
 	}
