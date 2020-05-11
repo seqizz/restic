@@ -188,7 +188,7 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 	// Check if all used blobs has been found in index
 	// TODO: maybe add flag --force ?
 	if len(usedBlobs) != 0 {
-		Warnf("There are following blobs are missing in the index, run restic check:", usedBlobs)
+		Warnf("There are following blobs are missing in the index, run restic check: %v\n", usedBlobs)
 		return errors.New("Error: Index is not complete!")
 	}
 
@@ -273,7 +273,7 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 	}
 
 	if len(indexPack) != 0 {
-		Warnf("There are packs in the index that are not present in the repository:", indexPack)
+		Warnf("There are packs in the index that are not present in the repository: %v\n", indexPack)
 		return errors.New("Error: Packs from index missing in repo!")
 	}
 
