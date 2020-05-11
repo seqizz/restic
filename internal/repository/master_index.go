@@ -210,68 +210,51 @@ func (mi *MasterIndex) Each(ctx context.Context) <-chan restic.PackedBlob {
 	return ch
 }
 
-// RebuildIndex rewrites all index entries, leaving out any
-// packs whose ID is contained in packBlacklist and adds the rewritten index entries
-// to the "supersedes"
-func (mi *MasterIndex) RebuildIndex(ctx context.Context, packBlacklist restic.IDSet) (obsolete restic.IDSet, err error) {
-
-	// get all final indexes
+// RebuildIndex combines all known indexes to a new index, leaving out any
+// packs whose ID is contained in packBlacklist. The new index contains the IDs
+// of all known indexes in the "supersedes" field.
+func (mi *MasterIndex) RebuildIndex(packBlacklist restic.IDSet) (*Index, restic.IDSet, error) {
 	mi.idxMutex.Lock()
-	var indexes []*Index
-	for _, idx := range mi.idx {
-		if !idx.Final() {
-			continue
-		}
-		indexes = append(indexes, idx)
-	}
-	mi.idxMutex.Unlock()
+	defer mi.idxMutex.Unlock()
 
 	debug.Log("start rebuilding index of %d indexes, pack blacklist: %v", len(mi.idx), packBlacklist)
-	obsolete = restic.NewIDSet()
 
-	for i, idx := range indexes {
+	newIndex := NewIndex()
+	obsolete := restic.NewIDSet()
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	for i, idx := range mi.idx {
 		debug.Log("adding index %d", i)
-
-		// only rebuild index file if there are packs in packBlacklist
-		indexChanged := false
-		for pack := range idx.Packs() {
-			if packBlacklist.Has(pack) {
-				indexChanged = true
-				break
-			}
-		}
-
-		if !indexChanged {
-			continue
-		}
 
 		for pb := range idx.Each(ctx) {
 			if packBlacklist.Has(pb.PackID) {
 				continue
 			}
-			mi.Store(pb)
+
+			newIndex.Store(pb)
+		}
+
+		if !idx.Final() {
+			debug.Log("index %d isn't final, don't add to supersedes field", i)
+			continue
 		}
 
 		id, err := idx.ID()
 		if err != nil {
 			debug.Log("index %d does not have an ID: %v", err)
-			return nil, err
+			return nil, nil, err
 		}
 
 		debug.Log("adding index id %v to supersedes field", id)
 
-		for _, idx := range mi.idx {
-			if !idx.Final() {
-				err = idx.AddToSupersedes(id)
-				if err != nil {
-					return nil, err
-				}
-				break
-			}
+		err = newIndex.AddToSupersedes(id)
+		if err != nil {
+			return nil, nil, err
 		}
-
 		obsolete.Insert(id)
 	}
 
-	return
+	return newIndex, obsolete, nil
 }
