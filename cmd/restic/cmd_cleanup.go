@@ -147,16 +147,27 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 	ctx := gopts.ctx
 
 	var stats struct {
-		usedBlobs      uint
-		duplicateBlobs uint
-		unusedBlobs    uint
-		removeBlobs    uint
-		repackBlobs    uint
-		usedSize       uint64
-		duplicateSize  uint64
-		unusedSize     uint64
-		removeSize     uint64
-		repackSize     uint64
+		blobs struct {
+			used      uint
+			duplicate uint
+			unused    uint
+			remove    uint
+			repack    uint
+			repackrm  uint
+		}
+		size struct {
+			used      uint64
+			duplicate uint64
+			unused    uint64
+			remove    uint64
+			repack    uint64
+			repackrm  uint64
+			unref     uint64
+		}
+		packs struct {
+			keepUsed       uint
+			keepPartlyUsed uint
+		}
 	}
 
 	Verbosef("find packs in index and calculate used size...\n")
@@ -171,17 +182,17 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 		bh := blob.Handle()
 		switch {
 		case usedBlobs.Has(bh): // used blob
-			stats.usedSize += sizeInPack(blob.Length)
-			stats.usedBlobs++
+			stats.size.used += sizeInPack(blob.Length)
+			stats.blobs.used++
 			usedBlobs.Delete(bh)
 			keepBlobs.Insert(bh)
 		case keepBlobs.Has(bh): // duplicate blob
-			stats.duplicateSize += sizeInPack(blob.Length)
-			stats.duplicateBlobs++
+			stats.size.duplicate += sizeInPack(blob.Length)
+			stats.blobs.duplicate++
 			duplicateBlobs.Insert(bh)
 		default: // unused blob
-			stats.unusedSize += sizeInPack(blob.Length)
-			stats.unusedBlobs++
+			stats.size.unused += sizeInPack(blob.Length)
+			stats.blobs.unused++
 		}
 	}
 
@@ -226,27 +237,36 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 
 	var repackCandidates []packInfoWithID
 
+	doStatsRepack := func(p packInfo) {
+		stats.blobs.repack += p.unusedBlobs + p.duplicateBlobs + p.usedBlobs
+		stats.size.repack += p.unusedSize + p.usedSize
+		stats.blobs.repackrm += p.unusedBlobs
+		stats.size.repackrm += p.unusedSize
+	}
+
 	err := repo.List(ctx, restic.DataFile, func(id restic.ID, packSize int64) error {
 		p, ok := indexPack[id]
 		if !ok {
 			// Pack was not referenced in index and is not used  => immediately remove!
+			Verbosef("pack %s is not referenced in any index and not used -> will be removed.\n", id.Str())
 			removePacksFirst.Insert(id)
-			stats.unusedSize += uint64(packSize)
-			stats.removeSize += uint64(packSize)
+			stats.size.unref += uint64(packSize)
 			return nil
 		}
 
 		switch {
 		case p.unusedBlobs == 0:
 			// All blobs in pack are used => keep pack!
+			stats.packs.keepUsed++
 
 		case p.usedBlobs == 0 && p.duplicateBlobs == 0:
 			// All blobs in pack are no longer used => remove pack!
 			removePacks.Insert(id)
-			stats.removeBlobs += p.unusedBlobs
-			stats.removeSize += p.unusedSize
+			stats.blobs.remove += p.unusedBlobs
+			stats.size.remove += p.unusedSize
 
 		case opts.RepackTreesOnly && p.tpe == restic.DataBlob:
+			stats.packs.keepUsed++
 			// if this is a data pack and --repack-trees-only is set => keep pack!
 
 		case opts.RepackMixed && p.tpe == restic.InvalidBlob,
@@ -255,10 +275,7 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 			opts.MaxUnusedPercent == 0.0:
 			// repack if the according flag is set!
 			repackPacks.Insert(id)
-			stats.repackBlobs += p.unusedBlobs + p.duplicateBlobs + p.usedBlobs
-			stats.repackSize += p.unusedSize + p.usedSize
-			stats.removeBlobs += p.unusedBlobs
-			stats.removeSize += p.unusedSize
+			doStatsRepack(p)
 
 		default:
 			// all other packs are candidates for repacking
@@ -277,14 +294,15 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 		return errors.New("Error: Packs from index missing in repo!")
 	}
 
+	// if all duplicates are repacked, print out correct statistics
 	if opts.RepackDuplicates || (opts.MaxUnusedPercent == 0.0) {
-		stats.removeBlobs += stats.duplicateBlobs
-		stats.removeSize += stats.duplicateSize
+		stats.blobs.repackrm += stats.blobs.duplicate
+		stats.size.repackrm += stats.size.duplicate
 	}
 
 	// If unused space is restricted, check and maybe find packs for repacking
-	if opts.MaxUnusedPercent < 100.0 {
-		maxUnusedSizeAfter := uint64(opts.MaxUnusedPercent / (100.0 - opts.MaxUnusedPercent) * float32(stats.usedSize))
+	if opts.MaxUnusedPercent < 100.0 && opts.MaxUnusedPercent > 0.0 {
+		maxUnusedSizeAfter := uint64(opts.MaxUnusedPercent / (100.0 - opts.MaxUnusedPercent) * float32(stats.size.used))
 
 		//sort repackCandidates such that packs with highest ratio unused/used space are picked first
 		sort.Slice(repackCandidates, func(i, j int) bool {
@@ -292,28 +310,37 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 				repackCandidates[j].unusedSize*repackCandidates[i].usedSize
 		})
 
-		for _, p := range repackCandidates {
-			if stats.unusedSize < maxUnusedSizeAfter+stats.removeSize {
+		for i, p := range repackCandidates {
+			if stats.size.unused < maxUnusedSizeAfter+stats.size.remove+stats.size.repackrm {
+				stats.packs.keepPartlyUsed += uint(len(repackCandidates) - i)
 				break
 			}
 			repackPacks.Insert(p.ID)
-			stats.repackBlobs += p.unusedBlobs + p.duplicateBlobs + p.usedBlobs
-			stats.repackSize += p.unusedSize + p.usedSize
-			stats.removeBlobs += p.unusedBlobs
-			stats.removeSize += p.unusedSize
+			doStatsRepack(p.packInfo)
 		}
 	}
 
-	Verbosef("used:       %8d blobs / %s\n", stats.usedBlobs, formatBytes(stats.usedSize))
-	Verbosef("duplicates: %8d blobs / %s\n", stats.duplicateBlobs, formatBytes(stats.duplicateSize))
-	Verbosef("unused:     %8d blobs / %s\n", stats.unusedBlobs, formatBytes(stats.unusedSize))
-	totalSize := stats.usedSize + stats.duplicateSize + stats.unusedSize
-	Verbosef("total:      %8d blobs / %s\n", stats.usedBlobs+stats.unusedBlobs+stats.duplicateBlobs,
+	Verbosef("\nused:        %8d blobs / %s\n", stats.blobs.used, formatBytes(stats.size.used))
+	Verbosef("duplicates:  %8d blobs / %s\n", stats.blobs.duplicate, formatBytes(stats.size.duplicate))
+	Verbosef("unused:      %8d blobs / %s\n", stats.blobs.unused, formatBytes(stats.size.unused))
+	Verbosef("unreferenced:                 %s\n", formatBytes(stats.size.unref))
+	totalSize := stats.size.used + stats.size.duplicate + stats.size.unused + stats.size.unref
+	Verbosef("total:       %8d blobs / %s\n", stats.blobs.used+stats.blobs.unused+stats.blobs.duplicate,
 		formatBytes(totalSize))
-	Verbosef("unused size: %3.2f%% of total size\n\n", 100.0*float32(stats.unusedSize)/float32(totalSize))
+	Verbosef("unused size: %3.2f%% of total size\n\n", 100.0*float32(stats.size.unused)/float32(totalSize))
 
-	Verbosef("to repack:  %8d blobs / %s\n", stats.repackBlobs, formatBytes(stats.repackSize))
-	Verbosef("to delete:  %8d blobs / %s\n", stats.removeBlobs, formatBytes(stats.removeSize))
+	Verbosef("to repack:   %8d blobs / %s\n", stats.blobs.repack, formatBytes(stats.size.repack))
+	Verbosef("  -> prunes: %8d blobs / %s\n", stats.blobs.repackrm, formatBytes(stats.size.repackrm))
+	Verbosef("to delete:   %8d blobs / %s\n", stats.blobs.remove, formatBytes(stats.size.remove))
+	Verbosef("delete unreferenced:          %s\n", formatBytes(stats.size.unref))
+	totalPruneSize := stats.size.remove + stats.size.repackrm + stats.size.unref
+	Verbosef("total prune: %8d blobs / %s\n", stats.blobs.remove+stats.blobs.repackrm, formatBytes(totalPruneSize))
+	Verbosef("unused size after prune: %3.2f%% of total size\n\n",
+		100.0*float32(stats.size.unused-stats.size.remove-stats.size.repackrm)/float32(totalSize-totalPruneSize))
+
+	Verbosef("total data files: %d / keep used: %d, keep partly used: %d, repack: %d, delete: %d, delete unreferenced: %d\n\n",
+		int(stats.packs.keepUsed+stats.packs.keepPartlyUsed)+len(repackPacks)+len(removePacks)+len(removePacksFirst),
+		stats.packs.keepUsed, stats.packs.keepPartlyUsed, len(repackPacks), len(removePacks), len(removePacksFirst))
 
 	// unreferenced packs can be safely deleted first
 	if len(removePacksFirst) != 0 {
@@ -324,7 +351,7 @@ func Cleanup(opts CleanupOptions, gopts GlobalOptions, repo restic.Repository, u
 	if len(repackPacks) != 0 {
 		if !opts.DryRun {
 			Verbosef("repacking packs...\n")
-			bar := newProgressMax(!gopts.Quiet, uint64(stats.repackBlobs), "blobs repacked")
+			bar := newProgressMax(!gopts.Quiet, uint64(stats.blobs.repack), "blobs repacked")
 			bar.Start()
 			// TODO in Repack:  - Parallelize repacking
 			//                  - Save full indexes during repacking
