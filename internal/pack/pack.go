@@ -328,9 +328,9 @@ func List(k *crypto.Key, rd io.ReaderAt, size int64) (entries []restic.Blob, err
 
 // PackedSizeOfBlob returns the size a blob actually uses when saved in a pack
 func PackedSizeOfBlob(blobLength uint) uint {
-	return blobLength + entrySize + crypto.Extension
+	return blobLength + entrySize
 }
 
 func HeaderSize() int {
-	return headerLengthSize
+	return headerLengthSize + crypto.Extension
 }
