@@ -248,8 +248,8 @@ func testRunForgetJSON(t testing.TB, gopts GlobalOptions, args ...string) {
 	return
 }
 
-func testRunPrune(t testing.TB, gopts GlobalOptions) {
-	rtest.OK(t, runPrune(gopts))
+func testRunPrune(t testing.TB, gopts GlobalOptions, opts PruneOptions) {
+	rtest.OK(t, runPrune(opts, gopts))
 }
 
 func TestBackup(t *testing.T) {
@@ -1051,6 +1051,36 @@ func TestCheckRestoreNoLock(t *testing.T) {
 }
 
 func TestPrune(t *testing.T) {
+	opts := PruneOptions{}
+	checkOpts := CheckOptions{
+		ReadData:    true,
+		CheckUnused: true,
+	}
+	testPrune(t, opts, checkOpts)
+}
+
+func TestPrune100(t *testing.T) {
+	opts := PruneOptions{MaxUnusedPercent: 100.0}
+	checkOpts := CheckOptions{ReadData: true}
+	testPrune(t, opts, checkOpts)
+}
+
+func TestPruneNoRebuildIndex(t *testing.T) {
+	opts := PruneOptions{NoRebuildIndex: true}
+	checkOpts := CheckOptions{
+		ReadData:    true,
+		CheckUnused: true,
+	}
+	testPrune(t, opts, checkOpts)
+}
+
+func TestPruneRepackTreesOnly(t *testing.T) {
+	opts := PruneOptions{RepackTreesOnly: true}
+	checkOpts := CheckOptions{ReadData: true}
+	testPrune(t, opts, checkOpts)
+}
+
+func testPrune(t *testing.T, prunopts PruneOptions, checkOpts CheckOptions) {
 	env, cleanup := withTestEnvironment(t)
 	defer cleanup()
 
@@ -1082,8 +1112,8 @@ func TestPrune(t *testing.T) {
 
 	testRunForgetJSON(t, env.gopts)
 	testRunForget(t, env.gopts, firstSnapshot[0].String())
-	testRunPrune(t, env.gopts)
-	testRunCheck(t, env.gopts)
+	testRunPrune(t, env.gopts, prunopts)
+	rtest.OK(t, runCheck(checkOpts, env.gopts, nil))
 }
 
 func TestHardLink(t *testing.T) {

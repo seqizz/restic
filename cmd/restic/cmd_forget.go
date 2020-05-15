@@ -74,6 +74,7 @@ func init() {
 	f.BoolVar(&forgetOptions.Prune, "prune", false, "automatically run the 'prune' command if snapshots have been removed")
 
 	f.SortFlags = false
+	addPruneFlags(cmdForget)
 }
 
 func runForget(opts ForgetOptions, gopts GlobalOptions, args []string) error {
@@ -211,9 +212,8 @@ func runForget(opts ForgetOptions, gopts GlobalOptions, args []string) error {
 		if !gopts.JSON {
 			Verbosef("%d snapshots have been removed, running prune\n", removeSnapshots)
 		}
-		if !opts.DryRun {
-			return pruneRepository(gopts, repo)
-		}
+		pruneOptions.DryRun = opts.DryRun
+		return runPrune(pruneOptions, gopts)
 	}
 
 	return nil
