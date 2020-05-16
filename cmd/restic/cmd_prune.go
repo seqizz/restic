@@ -187,8 +187,6 @@ type packInfoWithID struct {
 	packInfo
 }
 
-const SmallPackSize = 1000000
-
 func sizeInPack(blobLength uint) uint64 {
 	return uint64(pack.PackedSizeOfBlob(blobLength))
 }
@@ -330,7 +328,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 			stats.packs.keepPartlyUsed++
 
 		case opts.RepackMixed && p.tpe == restic.InvalidBlob,
-			opts.RepackSmall && packSize < SmallPackSize,
+			opts.RepackSmall && packSize < repository.MinPackSize,
 			opts.RepackDuplicates && p.duplicateBlobs > 0,
 			opts.MaxUnusedPercent == 0.0:
 			// repack if the according flag is set!
@@ -385,7 +383,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	Verbosef("\nused:        %10d blobs / %s\n", stats.blobs.used, formatBytes(stats.size.used))
 	Verbosef("duplicates:  %10d blobs / %s\n", stats.blobs.duplicate, formatBytes(stats.size.duplicate))
 	Verbosef("unused:      %10d blobs / %s\n", stats.blobs.unused, formatBytes(stats.size.unused))
-	Verbosef("unreferenced:                 %s\n", formatBytes(stats.size.unref))
+	Verbosef("unreferenced:                   %s\n", formatBytes(stats.size.unref))
 	totalSize := stats.size.used + stats.size.duplicate + stats.size.unused + stats.size.unref
 	Verbosef("total:       %10d blobs / %s\n", stats.blobs.used+stats.blobs.unused+stats.blobs.duplicate,
 		formatBytes(totalSize))
@@ -394,7 +392,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	Verbosef("to repack:   %10d blobs / %s\n", stats.blobs.repack, formatBytes(stats.size.repack))
 	Verbosef("  -> prunes: %10d blobs / %s\n", stats.blobs.repackrm, formatBytes(stats.size.repackrm))
 	Verbosef("to delete:   %10d blobs / %s\n", stats.blobs.remove, formatBytes(stats.size.remove))
-	Verbosef("delete unreferenced:          %s\n", formatBytes(stats.size.unref))
+	Verbosef("delete unreferenced:            %s\n", formatBytes(stats.size.unref))
 	totalPruneSize := stats.size.remove + stats.size.repackrm + stats.size.unref
 	Verbosef("total prune: %10d blobs / %s\n", stats.blobs.remove+stats.blobs.repackrm, formatBytes(totalPruneSize))
 	Verbosef("unused size after prune: %s of total size\n\n",
@@ -442,7 +440,6 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 			// Call RebuildIndex: rebuilds the index from the already loaded in-memory index.
 			// TODO in RebuildIndex: - Save full indexes
 			//						- Parallelize repacking
-			//						- make it work with already saved indexes during Repack above
 			newIndex, obsoleteIndexes, err := (repo.Index()).(*repository.MasterIndex).RebuildIndex(removePacks)
 			if err != nil {
 				return err
