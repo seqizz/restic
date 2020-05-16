@@ -78,6 +78,11 @@ func init() {
 }
 
 func runForget(opts ForgetOptions, gopts GlobalOptions, args []string) error {
+	err := verifyPruneFlags(pruneOptions)
+	if err != nil {
+		return err
+	}
+
 	repo, err := OpenRepository(gopts)
 	if err != nil {
 		return err
@@ -213,7 +218,7 @@ func runForget(opts ForgetOptions, gopts GlobalOptions, args []string) error {
 			Verbosef("%d snapshots have been removed, running prune\n", removeSnapshots)
 		}
 		pruneOptions.DryRun = opts.DryRun
-		return runPrune(pruneOptions, gopts)
+		return runPruneWithRepo(pruneOptions, gopts, repo)
 	}
 
 	return nil

@@ -52,11 +52,11 @@ func init() {
 func addPruneFlags(c *cobra.Command) {
 	f := c.Flags()
 	f.Float32Var(&pruneOptions.MaxUnusedPercent, "max-unused-percent", 1.5, "tolerate given % of unused space in the repository")
-	f.BoolVar(&pruneOptions.RepackSmall, "repack-small", true, "always repack small pack files")
-	f.BoolVar(&pruneOptions.RepackMixed, "repack-mixed", true, "always repack packs that have mixed blob types")
-	f.BoolVar(&pruneOptions.RepackDuplicates, "repack-duplicates", true, "always repack packs that have duplicates of blobs")
-	f.BoolVar(&pruneOptions.RepackTreesOnly, "repack-trees-only", false, "only repack tree blobs")
-	f.BoolVar(&pruneOptions.NoRebuildIndex, "no-rebuild-index", false, "do not rebuild the index from packfiles after pruning")
+	f.BoolVar(&pruneOptions.RepackSmall, "repack-small", true, "always repack small data files")
+	f.BoolVar(&pruneOptions.RepackMixed, "repack-mixed", true, "always repack data files that have mixed blob types")
+	f.BoolVar(&pruneOptions.RepackDuplicates, "repack-duplicates", true, "always repack data files that have duplicates of blobs")
+	f.BoolVar(&pruneOptions.RepackTreesOnly, "repack-trees-only", false, "only repack data files containing tree blobs")
+	f.BoolVar(&pruneOptions.NoRebuildIndex, "no-rebuild-index", false, "do not rebuild the index from data files after pruning")
 }
 
 func verifyPruneFlags(opts PruneOptions) error {
@@ -123,7 +123,10 @@ func runPrune(opts PruneOptions, gopts GlobalOptions) error {
 		return err
 	}
 
-	// get snapshot list
+	return runPruneWithRepo(opts, gopts, repo)
+}
+
+func runPruneWithRepo(opts PruneOptions, gopts GlobalOptions, repo *repository.Repository) error {
 	Verbosef("get all snapshots\n")
 	snapshots, err := restic.LoadAllSnapshots(gopts.ctx, repo)
 	if err != nil {
@@ -219,7 +222,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		}
 	}
 
-	Verbosef("find packs in index and calculate used size...\n")
+	Verbosef("find data files in index and calculate used size...\n")
 
 	keepBlobs := restic.NewBlobSet()
 	duplicateBlobs := restic.NewBlobSet()
@@ -278,7 +281,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		indexPack[blob.PackID] = ip
 	}
 
-	Verbosef("collect data for deletion and repacking...\n")
+	Verbosef("collect data files for deletion and repacking...\n")
 	removePacksFirst := restic.NewIDSet()
 	removePacks := restic.NewIDSet()
 	repackPacks := restic.NewIDSet()
@@ -299,16 +302,15 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		p, ok := indexPack[id]
 		if !ok {
 			// Pack was not referenced in index and is not used  => immediately remove!
-			Verbosef("pack %s is not referenced in any index and not used -> will be removed.\n", id.Str())
+			Verbosef("data file %s is not referenced in any index and not used -> will be removed.\n", id.Str())
 			removePacksFirst.Insert(id)
 			stats.size.unref += uint64(packSize)
 			return nil
 		}
 
 		if p.unusedSize+p.usedSize != uint64(packSize) {
-			Verbosef("pack %s: calculated size %d does not match real size %d diff: %d,%v\n",
-				//id.Str(), formatBytes(p.unusedSize+p.usedSize), formatBytes(uint64(packSize)))
-				id.Str(), p.unusedSize+p.usedSize, packSize, packSize-int64(p.unusedSize+p.usedSize), p)
+			Verbosef("data file %s: calculated size %d does not match real size %d difference: %d\n",
+				id.Str(), p.unusedSize+p.usedSize, packSize, packSize-int64(p.unusedSize+p.usedSize))
 
 		}
 
@@ -323,7 +325,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 			stats.blobs.remove += p.unusedBlobs
 			stats.size.remove += p.unusedSize
 
-		case opts.RepackTreesOnly && p.tpe == restic.DataBlob:
+		case opts.RepackTreesOnly && p.tpe != restic.TreeBlob:
 			// if this is a data pack and --repack-trees-only is set => keep pack!
 			stats.packs.keepPartlyUsed++
 
@@ -349,8 +351,8 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	}
 
 	if len(indexPack) != 0 {
-		Warnf("There are packs in the index that are not present in the repository: %v\n", indexPack)
-		return errors.New("Error: Packs from index missing in repo!")
+		Warnf("There are data files referenced in the index that are not present in the repository: %v\n", indexPack)
+		return errors.New("Error: Data files from index missing in repo!")
 	}
 
 	// if all duplicates are repacked, print out correct statistics
@@ -410,8 +412,8 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 
 	if len(repackPacks) != 0 {
 		if !opts.DryRun {
-			Verbosef("repacking packs...\n")
-			bar := newProgressMax(!gopts.Quiet, uint64(stats.blobs.repack), "blobs repacked")
+			Verbosef("repacking data files...\n")
+			bar := newProgressMax(!gopts.Quiet, uint64(len(repackPacks)), "data files repacked")
 			bar.Start()
 			// TODO in Repack:  - Parallelize repacking
 			//                  - Save full indexes during repacking
@@ -424,7 +426,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		} else {
 			if !gopts.JSON {
 				for id := range repackPacks {
-					Verbosef("would have repacked pack %v.\n", id.Str())
+					Verbosef("would have repacked data file %v.\n", id.Str())
 				}
 			}
 		}
