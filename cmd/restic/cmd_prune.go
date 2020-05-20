@@ -411,8 +411,8 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	}
 
 	if len(repackPacks) != 0 {
+		Verbosef("repacking data files...\n")
 		if !opts.DryRun {
-			Verbosef("repacking data files...\n")
 			bar := newProgressMax(!gopts.Quiet, uint64(len(repackPacks)), "data files repacked")
 			bar.Start()
 			// TODO in Repack:  - Parallelize repacking
@@ -430,7 +430,6 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 				}
 			}
 		}
-
 		// Also remove repacked packs
 		removePacks.Merge(repackPacks)
 	}
@@ -495,21 +494,21 @@ func DeleteFiles(gopts GlobalOptions, dryrun bool, ignoreError bool, repo restic
 	for i := 0; i < numDeleteWorkers; i++ {
 		wg.Go(func() error {
 			for h := range fileHandles {
-				if !dryrun {
-					err := repo.Backend().Remove(ctx, h)
-					if err != nil {
-						Warnf("unable to remove file %v from the repository\n", h.Name)
-						if !ignoreError {
-							return err
-						}
-					}
-					if !gopts.JSON && gopts.verbosity >= 2 {
-						Verbosef("%v was removed.\n", h.Name)
-					}
-				} else {
+				if dryrun {
 					if !gopts.JSON {
 						Verbosef("would have removed %v.\n", h.Name)
 					}
+					continue
+				}
+				err := repo.Backend().Remove(ctx, h)
+				if err != nil {
+					Warnf("unable to remove file %v from the repository\n", h.Name)
+					if !ignoreError {
+						return err
+					}
+				}
+				if !gopts.JSON && gopts.verbosity >= 2 {
+					Verbosef("%v was removed.\n", h.Name)
 				}
 				bar.Report(restic.Stat{Blobs: 1})
 			}

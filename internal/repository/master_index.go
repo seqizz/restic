@@ -212,15 +212,16 @@ func (mi *MasterIndex) Each(ctx context.Context) <-chan restic.PackedBlob {
 
 // RebuildIndex combines all known indexes to a new index, leaving out any
 // packs whose ID is contained in packBlacklist. The new index contains the IDs
-// of all known indexes in the "supersedes" field.
-func (mi *MasterIndex) RebuildIndex(packBlacklist restic.IDSet) (*Index, restic.IDSet, error) {
+// of all known indexes in the "supersedes" field. The IDs are also returned in
+// the IDSet obsolete
+func (mi *MasterIndex) RebuildIndex(packBlacklist restic.IDSet) (newIndex *Index, obsolete restic.IDSet, err error) {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
 	debug.Log("start rebuilding index of %d indexes, pack blacklist: %v", len(mi.idx), packBlacklist)
 
-	newIndex := NewIndex()
-	obsolete := restic.NewIDSet()
+	newIndex = NewIndex()
+	obsolete = restic.NewIDSet()
 
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
@@ -256,5 +257,5 @@ func (mi *MasterIndex) RebuildIndex(packBlacklist restic.IDSet) (*Index, restic.
 		obsolete.Insert(id)
 	}
 
-	return newIndex, obsolete, nil
+	return
 }
