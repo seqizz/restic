@@ -37,7 +37,6 @@ type PruneOptions struct {
 	RepackMixed      bool
 	RepackDuplicates bool
 	RepackTreesOnly  bool
-	NoRebuildIndex   bool
 }
 
 var pruneOptions PruneOptions
@@ -56,7 +55,6 @@ func addPruneFlags(c *cobra.Command) {
 	f.BoolVar(&pruneOptions.RepackMixed, "repack-mixed", true, "always repack data files that have mixed blob types")
 	f.BoolVar(&pruneOptions.RepackDuplicates, "repack-duplicates", true, "always repack data files that have duplicates of blobs")
 	f.BoolVar(&pruneOptions.RepackTreesOnly, "repack-trees-only", false, "only repack data files containing tree blobs")
-	f.BoolVar(&pruneOptions.NoRebuildIndex, "no-rebuild-index", false, "do not rebuild the index from data files after pruning")
 }
 
 func verifyPruneFlags(opts PruneOptions) error {
@@ -437,30 +435,19 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 	if len(removePacks) != 0 && !opts.DryRun {
 		Verbosef("updating index files...\n")
 
-		if opts.NoRebuildIndex {
-			// Call RebuildIndex: rebuilds the index from the already loaded in-memory index.
-			// TODO in RebuildIndex: - Save full indexes
-			//						- Parallelize repacking
-			newIndex, obsoleteIndexes, err := (repo.Index()).(*repository.MasterIndex).RebuildIndex(removePacks)
-			if err != nil {
-				return err
-			}
+		// Call RebuildIndex: rebuilds the index from the already loaded in-memory index.
+		// TODO in RebuildIndex: - Save full indexes
+		//						- Parallelize repacking
+		obsoleteIndexes, err := (repo.Index()).(*repository.MasterIndex).
+			RebuildIndex(ctx, repo, removePacks)
+		if err != nil {
+			return err
+		}
 
-			_, err = repository.SaveIndex(ctx, repo, newIndex)
-			if err != nil {
-				return err
-			}
-
-			Verbosef("deleting obsolete index files...\n")
-			err = DeleteFiles(gopts, opts.DryRun, false, repo, obsoleteIndexes, restic.IndexFile)
-			if err != nil {
-				return err
-			}
-		} else {
-			// Call "restic rebuild-index": rebuild the index from pack files
-			if err = rebuildIndex(ctx, repo, removePacks); err != nil {
-				return err
-			}
+		Verbosef("deleting obsolete index files...\n")
+		err = DeleteFiles(gopts, opts.DryRun, false, repo, obsoleteIndexes, restic.IndexFile)
+		if err != nil {
+			return err
 		}
 	}
 

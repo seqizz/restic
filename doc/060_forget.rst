@@ -338,15 +338,9 @@ working:
   A party used data file will be either kept or repacked depending on user options.
   Note that for repacking, restic needs to download the file from the repository
   storage and re-save the needed data in the repository. This can be very
-  time-consuming depending for remote repositories.
-- After deciding what to do, ``prune`` will actually perform the repack and modify
-  the index according to the changes made by prune. 
-- For the index changes there are two options: The index can be rebuild from the
-  data files. Then restic needs to download and read all data files from the
-  repository which can be slow for remote repositories. There is an experimental
-  option to save the index from the information restic already has in memory.
-  This is really fast but not suggested for big repositories.
-
+  time-consuming for remote repositories.
+- After deciding what to do, ``prune`` will actually perform the repack, modify
+  the index according to the changes and delete the obsolete files.
 
 The ``prune`` command accepts the following parameters:
 
@@ -370,9 +364,4 @@ The ``prune`` command accepts the following parameters:
    As these data files are also cached, this allows a very fast repacking using only
    cached data. It can, however, imply that the unused data in your repository exceeds
    the value given by ``--max-unused-percent``.
-   The default value is false.
--  ``--no-rebuild-index`` if set to true use save the index from in-memory data.
-   This is subject to further enhancements. Actually it saves a single index file.
-   Therefore it is not suggested for large repositories as this will result in one
-   really big index file.
    The default value is false.

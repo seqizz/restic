@@ -1065,15 +1065,6 @@ func TestPrune100(t *testing.T) {
 	testPrune(t, opts, checkOpts)
 }
 
-func TestPruneNoRebuildIndex(t *testing.T) {
-	opts := PruneOptions{NoRebuildIndex: true}
-	checkOpts := CheckOptions{
-		ReadData:    true,
-		CheckUnused: true,
-	}
-	testPrune(t, opts, checkOpts)
-}
-
 func TestPruneRepackTreesOnly(t *testing.T) {
 	opts := PruneOptions{RepackTreesOnly: true}
 	checkOpts := CheckOptions{ReadData: true}

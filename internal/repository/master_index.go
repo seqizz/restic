@@ -214,17 +214,14 @@ func (mi *MasterIndex) Each(ctx context.Context) <-chan restic.PackedBlob {
 // packs whose ID is contained in packBlacklist. The new index contains the IDs
 // of all known indexes in the "supersedes" field. The IDs are also returned in
 // the IDSet obsolete
-func (mi *MasterIndex) RebuildIndex(packBlacklist restic.IDSet) (newIndex *Index, obsolete restic.IDSet, err error) {
+func (mi *MasterIndex) RebuildIndex(ctx context.Context, repo restic.Repository, packBlacklist restic.IDSet) (obsolete restic.IDSet, err error) {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
 	debug.Log("start rebuilding index of %d indexes, pack blacklist: %v", len(mi.idx), packBlacklist)
 
-	newIndex = NewIndex()
+	newIndex := NewIndex()
 	obsolete = restic.NewIDSet()
-
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
 
 	for i, idx := range mi.idx {
 		debug.Log("adding index %d", i)
@@ -237,24 +234,35 @@ func (mi *MasterIndex) RebuildIndex(packBlacklist restic.IDSet) (newIndex *Index
 			newIndex.Store(pb)
 		}
 
-		if !idx.Final() {
+		if idx.Final() {
+			id, err := idx.ID()
+			if err != nil {
+				debug.Log("index %d does not have an ID: %v", err)
+				return nil, err
+			}
+
+			debug.Log("adding index id %v to supersedes field", id)
+
+			err = newIndex.AddToSupersedes(id)
+			if err != nil {
+				return nil, err
+			}
+			obsolete.Insert(id)
+		} else {
 			debug.Log("index %d isn't final, don't add to supersedes field", i)
-			continue
 		}
 
-		id, err := idx.ID()
-		if err != nil {
-			debug.Log("index %d does not have an ID: %v", err)
-			return nil, nil, err
+		if IndexFull(newIndex) {
+			_, err := SaveIndex(ctx, repo, newIndex)
+			if err != nil {
+				return nil, err
+			}
+			newIndex = NewIndex()
 		}
-
-		debug.Log("adding index id %v to supersedes field", id)
-
-		err = newIndex.AddToSupersedes(id)
-		if err != nil {
-			return nil, nil, err
-		}
-		obsolete.Insert(id)
+	}
+	_, err = SaveIndex(ctx, repo, newIndex)
+	if err != nil {
+		return nil, err
 	}
 
 	return
