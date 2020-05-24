@@ -482,6 +482,9 @@ func (r *Repository) LoadIndex(ctx context.Context) error {
 		return errors.Fatal(err.Error())
 	}
 
+	// remove obsolete indexes
+	validIndex.Sub(r.idx.Obsolete())
+
 	// remove index files from the cache which have been removed in the repo
 	err = r.PrepareCache(validIndex)
 	if err != nil {

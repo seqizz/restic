@@ -11,13 +11,15 @@ import (
 
 // MasterIndex is a collection of indexes and IDs of chunks that are in the process of being saved.
 type MasterIndex struct {
-	idx      []*Index
-	idxMutex sync.RWMutex
+	idx        []*Index
+	idxMutex   sync.RWMutex
+	superseded restic.IDSet
+	obsolete   restic.IDSet
 }
 
 // NewMasterIndex creates a new master index.
 func NewMasterIndex() *MasterIndex {
-	return &MasterIndex{}
+	return &MasterIndex{superseded: restic.NewIDSet(), obsolete: restic.NewIDSet()}
 }
 
 // Lookup queries all known Indexes for the ID and returns the first match.
@@ -93,11 +95,32 @@ func (mi *MasterIndex) Count(t restic.BlobType) (n uint) {
 }
 
 // Insert adds a new index to the MasterIndex.
+// The "supersedes" field is also evaluated and indexes that are superseeded
+// will be removed from the master index. The IDs of superseeded and removed
+// indexes will be available by the func Obsolete()
 func (mi *MasterIndex) Insert(idx *Index) {
 	mi.idxMutex.Lock()
 	defer mi.idxMutex.Unlock()
 
 	mi.idx = append(mi.idx, idx)
+	for _, id := range idx.supersedes {
+		mi.superseded.Insert(id)
+	}
+
+	// remove indexes that have been supedeeded
+	newIdx := mi.idx[:0]
+	for _, i := range mi.idx {
+		if mi.superseded.Has(i.id) {
+			mi.obsolete.Insert(i.id)
+		} else {
+			newIdx = append(newIdx, i)
+		}
+	}
+	mi.idx = newIdx
+}
+
+func (mi *MasterIndex) Obsolete() restic.IDSet {
+	return mi.obsolete
 }
 
 // Remove deletes an index from the MasterIndex.
@@ -222,6 +245,7 @@ func (mi *MasterIndex) RebuildIndex(ctx context.Context, repo restic.Repository,
 
 	newIndex := NewIndex()
 	obsolete = restic.NewIDSet()
+	newIdx := mi.idx[:0]
 
 	for i, idx := range mi.idx {
 		debug.Log("adding index %d", i)
@@ -230,7 +254,6 @@ func (mi *MasterIndex) RebuildIndex(ctx context.Context, repo restic.Repository,
 			if packBlacklist.Has(pb.PackID) {
 				continue
 			}
-
 			newIndex.Store(pb)
 		}
 
@@ -257,6 +280,7 @@ func (mi *MasterIndex) RebuildIndex(ctx context.Context, repo restic.Repository,
 			if err != nil {
 				return nil, err
 			}
+			newIdx = append(newIdx, newIndex)
 			newIndex = NewIndex()
 		}
 	}
@@ -264,6 +288,9 @@ func (mi *MasterIndex) RebuildIndex(ctx context.Context, repo restic.Repository,
 	if err != nil {
 		return nil, err
 	}
+	newIdx = append(newIdx, newIndex)
+
+	mi.idx = newIdx
 
 	return
 }

@@ -402,6 +402,13 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		int(stats.packs.keepUsed+stats.packs.keepPartlyUsed)+len(repackPacks)+len(removePacks)+len(removePacksFirst),
 		stats.packs.keepUsed, stats.packs.keepPartlyUsed, len(repackPacks), len(removePacks), len(removePacksFirst))
 
+	// delete obsolete index files (index files that have already been superseded)
+	obsoleteIndexes := (repo.Index()).(*repository.MasterIndex).Obsolete()
+	if len(obsoleteIndexes) != 0 {
+		Verbosef("deleting unused index files...\n")
+		DeleteFiles(gopts, opts.DryRun, true, repo, obsoleteIndexes, restic.IndexFile)
+	}
+
 	// unreferenced packs can be safely deleted first
 	if len(removePacksFirst) != 0 {
 		Verbosef("deleting unreferenced data files...\n")
@@ -436,8 +443,7 @@ func Prune(opts PruneOptions, gopts GlobalOptions, repo restic.Repository, usedB
 		Verbosef("updating index files...\n")
 
 		// Call RebuildIndex: rebuilds the index from the already loaded in-memory index.
-		// TODO in RebuildIndex: - Save full indexes
-		//						- Parallelize repacking
+		// TODO in RebuildIndex: - Parallelize repacking
 		obsoleteIndexes, err := (repo.Index()).(*repository.MasterIndex).
 			RebuildIndex(ctx, repo, removePacks)
 		if err != nil {
