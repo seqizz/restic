@@ -175,17 +175,9 @@ func copySnapshot(ctx context.Context, srcRepo, dstRepo restic.Repository, treeI
 				continue
 			}
 			debug.Log("Copying blob %s\n", blobID.Str())
-			size, found := srcRepo.LookupBlobSize(blobID, restic.DataBlob)
-			if !found {
-				return fmt.Errorf("LookupBlobSize(%v) failed", blobID)
-			}
-			buf := restic.NewBlobBuffer(int(size))
-			n, err := srcRepo.LoadBlob(ctx, restic.DataBlob, blobID, buf)
+			buf, err := srcRepo.LoadBlob(ctx, restic.DataBlob, blobID, nil)
 			if err != nil {
 				return fmt.Errorf("LoadBlob(%v) returned error %v", blobID, err)
-			}
-			if n != len(buf) {
-				return fmt.Errorf("wrong number of bytes read, want %d, got %d", len(buf), n)
 			}
 
 			newBlobID, err := dstRepo.SaveBlob(ctx, restic.DataBlob, buf, blobID)
