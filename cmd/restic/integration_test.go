@@ -1195,6 +1195,103 @@ func TestPrune(t *testing.T) {
 	testRunCheck(t, env.gopts)
 }
 
+func TestIndexMissing(t *testing.T) {
+	env, cleanup := withTestEnvironment(t)
+	defer cleanup()
+
+	datafile := filepath.Join("testdata", "repo-index-missing.tar.gz")
+	rtest.SetupTarTestFixture(t, env.base, datafile)
+
+	rtest.Assert(t, runCheck(CheckOptions{}, env.gopts, nil) != nil,
+		"check should have reported an error")
+	rtest.Assert(t, runPrune(env.gopts) != nil,
+		"prune should have reported an error")
+}
+
+func TestIndexMissingBlob(t *testing.T) {
+	env, cleanup := withTestEnvironment(t)
+	defer cleanup()
+
+	datafile := filepath.Join("testdata", "repo-index-missing-blob.tar.gz")
+	rtest.SetupTarTestFixture(t, env.base, datafile)
+
+	rtest.Assert(t, runCheck(CheckOptions{}, env.gopts, nil) != nil,
+		"check should have reported an error")
+	// prune resolves this situation
+	testRunPrune(t, env.gopts)
+	testRunCheck(t, env.gopts)
+
+}
+
+func TestDataMissing(t *testing.T) {
+	env, cleanup := withTestEnvironment(t)
+	defer cleanup()
+
+	datafile := filepath.Join("testdata", "repo-data-missing.tar.gz")
+	rtest.SetupTarTestFixture(t, env.base, datafile)
+
+	rtest.Assert(t, runCheck(CheckOptions{}, env.gopts, nil) != nil,
+		"check should have reported an error")
+	rtest.Assert(t, runPrune(env.gopts) != nil,
+		"prune should have reported an error")
+}
+
+func TestUnreferencedData(t *testing.T) {
+	env, cleanup := withTestEnvironment(t)
+	defer cleanup()
+
+	datafile := filepath.Join("testdata", "repo-unreferenced-data.tar.gz")
+	rtest.SetupTarTestFixture(t, env.base, datafile)
+
+	// check prints out an info but doesn't give an error for this setting.
+	testRunCheck(t, env.gopts)
+	testRunPrune(t, env.gopts)
+	testRunCheck(t, env.gopts)
+}
+
+func TestDuplicates(t *testing.T) {
+	env, cleanup := withTestEnvironment(t)
+	defer cleanup()
+
+	datafile := filepath.Join("testdata", "repo-duplicates.tar.gz")
+	rtest.SetupTarTestFixture(t, env.base, datafile)
+
+	opts := CheckOptions{
+		ReadData:    true,
+		CheckUnused: true,
+	}
+	rtest.Assert(t, runCheck(opts, env.gopts, nil) != nil,
+		"check should have reported unused blobs")
+	testRunPrune(t, env.gopts)
+	testRunCheck(t, env.gopts)
+}
+
+func TestObsoleteIndex(t *testing.T) {
+	env, cleanup := withTestEnvironment(t)
+	defer cleanup()
+
+	datafile := filepath.Join("testdata", "repo-obsolete-index.tar.gz")
+	rtest.SetupTarTestFixture(t, env.base, datafile)
+
+	// check prints out an info but doesn't give an error for this setting.
+	testRunCheck(t, env.gopts)
+	testRunPrune(t, env.gopts)
+	testRunCheck(t, env.gopts)
+}
+
+func TestMixed(t *testing.T) {
+	env, cleanup := withTestEnvironment(t)
+	defer cleanup()
+
+	datafile := filepath.Join("testdata", "repo-mixed.tar.gz")
+	rtest.SetupTarTestFixture(t, env.base, datafile)
+
+	// check prints out an info but doesn't give an error for this setting.
+	testRunCheck(t, env.gopts)
+	testRunPrune(t, env.gopts)
+	testRunCheck(t, env.gopts)
+}
+
 func TestHardLink(t *testing.T) {
 	// this test assumes a test set with a single directory containing hard linked files
 	env, cleanup := withTestEnvironment(t)
