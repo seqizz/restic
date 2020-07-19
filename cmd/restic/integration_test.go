@@ -256,8 +256,8 @@ func testRunForgetJSON(t testing.TB, gopts GlobalOptions, args ...string) {
 	return
 }
 
-func testRunPrune(t testing.TB, gopts GlobalOptions) {
-	rtest.OK(t, runPrune(gopts))
+func testRunPrune(t testing.TB, gopts GlobalOptions, opts PruneOptions) {
+	rtest.OK(t, runPrune(opts, gopts))
 }
 
 func TestBackup(t *testing.T) {
@@ -1160,6 +1160,43 @@ func TestCheckRestoreNoLock(t *testing.T) {
 }
 
 func TestPrune(t *testing.T) {
+	opts := PruneOptions{MaxRepackCount: MaxUint}
+	checkOpts := CheckOptions{
+		ReadData:    true,
+		CheckUnused: true,
+	}
+	testPrune(t, opts, checkOpts)
+}
+
+func TestPruneSmall(t *testing.T) {
+	opts := PruneOptions{MaxUnusedPercent: 100.0, RepackSmall: true, MaxRepackCount: MaxUint}
+	// The test case only produces small files; hence no unused blobs should remain.
+	checkOpts := CheckOptions{
+		ReadData:    true,
+		CheckUnused: true,
+	}
+	testPrune(t, opts, checkOpts)
+}
+
+func TestPrune100(t *testing.T) {
+	opts := PruneOptions{MaxUnusedPercent: 100.0, MaxRepackCount: MaxUint}
+	checkOpts := CheckOptions{ReadData: true}
+	testPrune(t, opts, checkOpts)
+}
+
+func TestPrune50(t *testing.T) {
+	opts := PruneOptions{MaxUnusedPercent: 50.0, MaxRepackCount: MaxUint}
+	checkOpts := CheckOptions{ReadData: true}
+	testPrune(t, opts, checkOpts)
+}
+
+func TestPruneRepackTreesOnly(t *testing.T) {
+	opts := PruneOptions{RepackTreesOnly: true, MaxRepackCount: MaxUint}
+	checkOpts := CheckOptions{ReadData: true}
+	testPrune(t, opts, checkOpts)
+}
+
+func testPrune(t *testing.T, prunopts PruneOptions, checkOpts CheckOptions) {
 	env, cleanup := withTestEnvironment(t)
 	defer cleanup()
 
@@ -1191,8 +1228,15 @@ func TestPrune(t *testing.T) {
 
 	testRunForgetJSON(t, env.gopts)
 	testRunForget(t, env.gopts, firstSnapshot[0].String())
-	testRunPrune(t, env.gopts)
-	testRunCheck(t, env.gopts)
+	testRunPrune(t, env.gopts, prunopts)
+	rtest.OK(t, runCheck(checkOpts, env.gopts, nil))
+}
+
+var PruneDefaultOptions = PruneOptions{
+	MaxUnusedPercent: 1.5,
+	MaxRepackCount:   MaxUint,
+	RepackDuplicates: true,
+	RepackMixed:      true,
 }
 
 func TestIndexMissing(t *testing.T) {
@@ -1204,7 +1248,7 @@ func TestIndexMissing(t *testing.T) {
 
 	rtest.Assert(t, runCheck(CheckOptions{}, env.gopts, nil) != nil,
 		"check should have reported an error")
-	rtest.Assert(t, runPrune(env.gopts) != nil,
+	rtest.Assert(t, runPrune(PruneDefaultOptions, env.gopts) != nil,
 		"prune should have reported an error")
 }
 
@@ -1215,12 +1259,8 @@ func TestIndexMissingBlob(t *testing.T) {
 	datafile := filepath.Join("testdata", "repo-index-missing-blob.tar.gz")
 	rtest.SetupTarTestFixture(t, env.base, datafile)
 
-	rtest.Assert(t, runCheck(CheckOptions{}, env.gopts, nil) != nil,
-		"check should have reported an error")
-	// prune resolves this situation
-	testRunPrune(t, env.gopts)
-	testRunCheck(t, env.gopts)
-
+	rtest.Assert(t, runPrune(PruneDefaultOptions, env.gopts) == errorIndexIncomplete,
+		"prune should have reported index not complete error")
 }
 
 func TestDataMissing(t *testing.T) {
@@ -1232,8 +1272,8 @@ func TestDataMissing(t *testing.T) {
 
 	rtest.Assert(t, runCheck(CheckOptions{}, env.gopts, nil) != nil,
 		"check should have reported an error")
-	rtest.Assert(t, runPrune(env.gopts) != nil,
-		"prune should have reported an error")
+	rtest.Assert(t, runPrune(PruneOptions{}, env.gopts) == errorPacksMissing,
+		"prune should have reported a data files missing error")
 }
 
 func TestUnreferencedData(t *testing.T) {
@@ -1245,7 +1285,7 @@ func TestUnreferencedData(t *testing.T) {
 
 	// check prints out an info but doesn't give an error for this setting.
 	testRunCheck(t, env.gopts)
-	testRunPrune(t, env.gopts)
+	testRunPrune(t, env.gopts, PruneDefaultOptions)
 	testRunCheck(t, env.gopts)
 }
 
@@ -1262,7 +1302,7 @@ func TestDuplicates(t *testing.T) {
 	}
 	rtest.Assert(t, runCheck(opts, env.gopts, nil) != nil,
 		"check should have reported unused blobs")
-	testRunPrune(t, env.gopts)
+	testRunPrune(t, env.gopts, PruneOptions{MaxRepackCount: MaxUint})
 	testRunCheck(t, env.gopts)
 }
 
@@ -1275,7 +1315,7 @@ func TestObsoleteIndex(t *testing.T) {
 
 	// check prints out an info but doesn't give an error for this setting.
 	testRunCheck(t, env.gopts)
-	testRunPrune(t, env.gopts)
+	testRunPrune(t, env.gopts, PruneDefaultOptions)
 	testRunCheck(t, env.gopts)
 }
 
@@ -1288,7 +1328,7 @@ func TestMixed(t *testing.T) {
 
 	// check prints out an info but doesn't give an error for this setting.
 	testRunCheck(t, env.gopts)
-	testRunPrune(t, env.gopts)
+	testRunPrune(t, env.gopts, PruneDefaultOptions)
 	testRunCheck(t, env.gopts)
 }
 

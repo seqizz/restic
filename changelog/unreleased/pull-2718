@@ -1,0 +1,17 @@
+Enhancement: Improve pruning performance and make pruning more customizable
+
+The prune command is now much faster. This is especially the case for remote
+repositories or repositories with not much to prune.
+Also the memory usage of the prune command is now reduced.
+
+The prune command now also supports new user flags, see
+https://restic.readthedocs.io/en/stable/060_forget.html
+
+Fixes several open issues, e.g.:
+https://github.com/restic/restic/issues/1599
+https://github.com/restic/restic/issues/1985
+https://github.com/restic/restic/issues/2162
+https://github.com/restic/restic/issues/2227
+https://github.com/restic/restic/issues/2305
+
+https://github.com/restic/restic/pull/2817
