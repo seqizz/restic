@@ -235,9 +235,21 @@ func PrintSnapshots(stdout io.Writer, list restic.Snapshots, reasons []restic.Ke
 
 	var multiline bool
 	for _, sn := range list {
+		var timestamp string
+		localTime := sn.Time.Local()
+		zoneName, _ := localTime.Zone()
+		if compact || (zoneName == "") {
+			// Fallback if compact output, or zone name is not available
+			// Apparently Zone() can return an empty string
+			timestamp = localTime.Format(TimeFormat)
+		} else {
+			// Include timezone name by default
+			timestamp = localTime.Format(TimeFormat) + " (" + zoneName + ")"
+		}
+
 		data := snapshot{
 			ID:        sn.ID().Str(),
-			Timestamp: sn.Time.Local().Format(TimeFormat),
+			Timestamp: timestamp,
 			Hostname:  sn.Hostname,
 			Tags:      sn.Tags,
 			Paths:     sn.Paths,
