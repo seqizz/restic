@@ -687,6 +687,8 @@ PruneSizes object
 +--------------------+-------------------------------------+--------+
 | ``remaining_unused`` | Size of remaining unused blobs    | uint64 |
 +--------------------+-------------------------------------+--------+
+| ``regroup``        | Size of fully used packs to regroup | uint64 |
++--------------------+-------------------------------------+--------+
 
 .. _PrunePackfiles object:
 
@@ -710,6 +712,8 @@ PrunePackfiles object
 | ``remove``       | Number of pack files to remove        | uint |
 +------------------+---------------------------------------+------+
 | ``remove_total`` | Total number of pack files to remove  | uint |
++------------------+---------------------------------------+------+
+| ``regroup``      | Number of fully used packs to regroup | uint |
 +------------------+---------------------------------------+------+
 
 

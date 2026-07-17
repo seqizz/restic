@@ -503,6 +503,12 @@ The ``prune`` command accepts the following options:
   ``--repack-smaller-than``. This allows repacking packfiles that initially came from a
   repository with a smaller ``--pack-size`` to be compacted into larger packfiles.
 
+- ``--group-by host,paths`` stores the repacked tree (metadata) blobs of each
+  snapshot group in separate pack files, which reduces the local cache that
+  clients need after a prune. The value should match the ``--group-by`` used
+  for ``backup``. The option is not available for ``forget --prune``. See
+  :ref:`tuning-prune-group-by` for details.
+
 -  ``--dry-run`` only show what ``prune`` would do.
 
 -  ``--verbose`` increased verbosity shows additional statistics for ``prune``.

@@ -120,6 +120,45 @@ increases the chance of these files being written to disk. This can increase dis
 for SSDs.
 
 
+.. _tuning-prune-group-by:
+
+Reducing client cache churn after prune
+=======================================
+
+When ``prune`` repacks pack files, it rewrites the surviving tree (metadata)
+blobs into new packs. By default the metadata of many hosts ends up interleaved
+in shared packs. Because the local cache stores whole metadata packs, a client
+then has to download a large set of packs on its next backup just to read its
+own parent snapshot, which can inflate the local cache size several-fold after
+every prune.
+
+Passing ``prune --group-by`` mitigates this by storing the tree blobs of each
+snapshot group in separate pack files (see :ref:`customize-pruning`). Without
+the option, ``prune`` does not group and behaves as before. The grouping should
+match the ``--group-by`` value the clients use for ``backup`` (default
+``host,paths``). Data blobs and deduplication are unchanged, and the produced
+repository remains fully compatible with older restic versions.
+
+Grouping applies to the tree blobs that ``prune`` repacks. In addition, metadata
+pack files that mix several groups are repacked even when all their blobs are
+still in use. An existing repository is therefore regrouped by the first
+``prune`` runs that use the option, which rewrites most of its metadata pack
+files once. This happens after all other repacking and within the
+``--max-repack-size`` limit. A later ``prune`` without the option mixes the
+groups again in the pack files it repacks.
+
+The number of groups that get their own pack files is limited to 256, as each of
+them holds an open temporary pack file while repacking. When there are more
+groups, the largest ones by number of tree blobs get their own pack files and
+the remaining ones share common pack files. Groups that already have their own
+pack files are preferred over groups of similar size. This avoids repeated
+repacking in repositories with many groups. A tree blob that is referenced by
+several groups is stored with one of them.
+
+With this option ``prune`` keeps the group of every tree blob in memory. This
+increases its memory usage for repositories that contain a lot of metadata.
+
+
 Feature flags
 =============
 
