@@ -312,7 +312,179 @@ func TestPruneGroupBy(t *testing.T) {
 		}
 	}))
 
-	// with each group's blobs fitting in a single pack, we expect exactly one
-	// pure pack per group
-	rtest.Equals(t, numGroups, len(packGroup))
+	// The repacked blobs of each group fit in a single pack. A small pack that
+	// already held a single group and had no second small pack of that group to
+	// merge with is kept, so a group can have more than one pack.
+	groups := make(map[uint32]struct{})
+	for _, g := range packGroup {
+		groups[g] = struct{}{}
+	}
+	rtest.Equals(t, numGroups, len(groups))
+	rtest.Assert(t, len(packGroup) <= 2*numGroups, "expected at most %d packs, got %d", 2*numGroups, len(packGroup))
+}
+
+/*
+1.) create a repository with a small packsize so the tree blobs land in several full packs, each mixing groups.
+2.) check that a prune without grouping keeps all of these fully used packs.
+3.) run PlanPrune/Execute with a group assignment and without forcing a repack via SmallPackBytes.
+4.) verify that the mixed packs were regrouped: every resulting pack contains tree blobs of a single group only.
+5.) plan again and verify that nothing is left to regroup.
+*/
+func TestPruneGroupByRegroupsUsedPacks(t *testing.T) {
+	t.Parallel()
+	seed := time.Now().UnixNano()
+	random := rand.New(rand.NewSource(seed))
+	t.Logf("rand initialized with seed %d", seed)
+
+	be := repository.TestBackend(t)
+	repo, _ := repository.TestRepositoryWithBackend(t, be, 0, repository.Options{PackSize: repository.MinPackSize, Compression: repository.CompressionOff})
+
+	const blobSize = 1000 * 1000
+	const numBlobs = 55
+	const numGroups = 4
+
+	keep := restic.NewBlobSet()
+	treeGroups := make(map[restic.BlobHandle]uint32)
+	rtest.OK(t, repo.WithBlobUploader(context.TODO(), func(ctx context.Context, uploader restic.BlobSaverWithAsync) error {
+		// a full pack holds five blobs of alternating groups, so it mixes groups
+		for i := 0; i < numBlobs; i++ {
+			buf := make([]byte, blobSize)
+			random.Read(buf)
+
+			id, _, _, err := uploader.SaveBlob(ctx, restic.TreeBlob, buf, restic.ID{}, false)
+			rtest.OK(t, err)
+			bh := restic.BlobHandle{Type: restic.TreeBlob, ID: id}
+			keep.Insert(bh)
+			treeGroups[bh] = uint32(i%numGroups) + 1
+		}
+		return nil
+	}))
+	rtest.OK(t, repo.Close())
+
+	// reopen with the default (larger) packsize
+	repo = repository.TestOpenBackend(t, be)
+	rtest.OK(t, repo.LoadIndex(context.TODO(), restic.NoopTerminalCounterFactory))
+
+	opts := repository.PruneOptions{
+		MaxRepackBytes: math.MaxUint64,
+		MaxUnusedBytes: func(used uint64) (unused uint64) { return blobSize / 4 },
+	}
+	planWithGroups := func(repo *repository.Repository, groups map[restic.BlobHandle]uint32) *repository.PrunePlan {
+		plan, err := repository.PlanPrune(context.TODO(), opts, repo, func(ctx context.Context, repo restic.Repository, usedBlobs restic.FindBlobSet) (map[restic.BlobHandle]uint32, error) {
+			for blob := range keep {
+				usedBlobs.Insert(blob)
+			}
+			return groups, nil
+		}, restic.NewNoopPrinter())
+		rtest.OK(t, err)
+		return plan
+	}
+
+	// without grouping all packs are fully used and stay untouched
+	stats := planWithGroups(repo, nil).Stats()
+	rtest.Equals(t, uint(0), stats.Packs.Repack, "prune without grouping must keep fully used packs")
+	rtest.Equals(t, uint(0), stats.Packs.Regroup)
+
+	plan := planWithGroups(repo, treeGroups)
+	stats = plan.Stats()
+	rtest.Assert(t, stats.Packs.Regroup > 0, "expected fully used packs mixing groups to be regrouped")
+	rtest.Equals(t, stats.Packs.Repack, stats.Packs.Regroup, "only packs mixing groups should be repacked")
+	rtest.OK(t, plan.Execute(context.TODO(), restic.NewNoopPrinter()))
+
+	// reopen repository and check integrity
+	repo = repository.TestOpenBackend(t, be)
+	repository.TestCheckRepo(t, repo)
+
+	// all kept blobs must still be loadable
+	for blob := range keep {
+		_, err := repo.LoadBlob(context.TODO(), blob, nil)
+		rtest.OK(t, err)
+	}
+
+	// every pack must hold tree blobs of a single group; no pack may mix groups
+	packGroup := make(map[restic.ID]uint32)
+	rtest.OK(t, repo.ListBlobs(context.TODO(), func(pb restic.PackBlob) {
+		bh := pb.Handle()
+		g, ok := treeGroups[bh]
+		rtest.Assert(t, ok, "tree blob %v missing from the group assignment", bh)
+		if prev, seen := packGroup[pb.PackID()]; seen {
+			rtest.Assert(t, prev == g, "pack %v mixes groups %d and %d", pb.PackID(), prev, g)
+		} else {
+			packGroup[pb.PackID()] = g
+		}
+	}))
+
+	// the regrouped packs hold a single group each, so a second run has nothing to do
+	stats = planWithGroups(repo, treeGroups).Stats()
+	rtest.Equals(t, uint(0), stats.Packs.Repack, "regrouping must converge after one run")
+}
+
+/*
+1.) create a repository with more than ten groups whose tree blobs share a single small pack.
+2.) run PlanPrune/Execute with the group assignment, which leaves one small pack per group.
+3.) plan again and verify that these small packs are kept: each is the only small pack of its group, so there is nothing to merge it with.
+*/
+func TestPruneGroupByKeepsSmallGroupPacks(t *testing.T) {
+	t.Parallel()
+	seed := time.Now().UnixNano()
+	random := rand.New(rand.NewSource(seed))
+	t.Logf("rand initialized with seed %d", seed)
+
+	be := repository.TestBackend(t)
+	repo, _ := repository.TestRepositoryWithBackend(t, be, 0, repository.Options{PackSize: repository.MinPackSize, Compression: repository.CompressionOff})
+
+	const blobSize = 100 * 1000
+	const numGroups = 12
+	const blobsPerGroup = 2
+
+	keep := restic.NewBlobSet()
+	treeGroups := make(map[restic.BlobHandle]uint32)
+	rtest.OK(t, repo.WithBlobUploader(context.TODO(), func(ctx context.Context, uploader restic.BlobSaverWithAsync) error {
+		for i := 0; i < numGroups*blobsPerGroup; i++ {
+			buf := make([]byte, blobSize)
+			random.Read(buf)
+
+			id, _, _, err := uploader.SaveBlob(ctx, restic.TreeBlob, buf, restic.ID{}, false)
+			rtest.OK(t, err)
+			bh := restic.BlobHandle{Type: restic.TreeBlob, ID: id}
+			keep.Insert(bh)
+			treeGroups[bh] = uint32(i%numGroups) + 1
+		}
+		return nil
+	}))
+	rtest.OK(t, repo.Close())
+
+	opts := repository.PruneOptions{
+		MaxRepackBytes: math.MaxUint64,
+		MaxUnusedBytes: func(used uint64) (unused uint64) { return blobSize / 4 },
+	}
+	planWithGroups := func(repo *repository.Repository) *repository.PrunePlan {
+		plan, err := repository.PlanPrune(context.TODO(), opts, repo, func(ctx context.Context, repo restic.Repository, usedBlobs restic.FindBlobSet) (map[restic.BlobHandle]uint32, error) {
+			for blob := range keep {
+				usedBlobs.Insert(blob)
+			}
+			return treeGroups, nil
+		}, restic.NewNoopPrinter())
+		rtest.OK(t, err)
+		return plan
+	}
+
+	repo = repository.TestOpenBackend(t, be)
+	rtest.OK(t, repo.LoadIndex(context.TODO(), restic.NoopTerminalCounterFactory))
+	plan := planWithGroups(repo)
+	rtest.Assert(t, plan.Stats().Packs.Regroup > 0, "expected the pack mixing all groups to be regrouped")
+	rtest.OK(t, plan.Execute(context.TODO(), restic.NewNoopPrinter()))
+
+	repo = repository.TestOpenBackend(t, be)
+	repository.TestCheckRepo(t, repo)
+
+	// one small pack per group
+	packs := restic.NewIDSet()
+	rtest.OK(t, repo.ListBlobs(context.TODO(), func(pb restic.PackBlob) {
+		packs.Insert(pb.PackID())
+	}))
+	rtest.Equals(t, numGroups, len(packs))
+
+	stats := planWithGroups(repo).Stats()
+	rtest.Equals(t, uint(0), stats.Packs.Repack, "small packs holding a single group must not be repacked again")
 }

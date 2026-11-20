@@ -58,6 +58,7 @@ type PruneStats struct {
 		RemoveTotal  uint64 `json:"remove_total"`
 		Remain       uint64 `json:"remaining"`
 		RemainUnused uint64 `json:"remaining_unused"`
+		Regroup      uint64 `json:"regroup"`
 	} `json:"bytes"`
 	Packs struct {
 		Used        uint `json:"used"`
@@ -69,6 +70,7 @@ type PruneStats struct {
 		Repack      uint `json:"repack"`
 		Remove      uint `json:"remove"`
 		RemoveTotal uint `json:"remove_total"`
+		Regroup     uint `json:"regroup"`
 	} `json:"packfiles"`
 }
 
@@ -94,12 +96,32 @@ type packInfo struct {
 
 	tpe          restic.BlobType
 	uncompressed bool
+
+	// treeGroup is the group of the used tree blobs in the pack, valid if
+	// hasTreeGroup is set. mixedTreeGroups marks a pack whose used tree blobs
+	// belong to more than one group. All three are only filled for a grouped
+	// prune.
+	treeGroup       uint32
+	hasTreeGroup    bool
+	mixedTreeGroups bool
+}
+
+// addTreeGroup records the group of a used tree blob stored in the pack.
+func (ip *packInfo) addTreeGroup(group uint32) {
+	if ip.hasTreeGroup && ip.treeGroup != group {
+		ip.mixedTreeGroups = true
+	}
+	ip.treeGroup = group
+	ip.hasTreeGroup = true
 }
 
 type packInfoWithID struct {
 	ID restic.ID
 	packInfo
 	mustCompress bool
+	// regroup marks a fully used pack that is repacked to separate the tree
+	// blobs of different groups
+	regroup bool
 }
 
 // getUsedBlobsFn fills usedBlobs with the blobs still in use. It may additionally
@@ -134,7 +156,7 @@ func PlanPrune(ctx context.Context, opts PruneOptions, repo *Repository, getUsed
 	}
 
 	printer.P("searching used packs...\n")
-	keepBlobs, indexPack, err := packInfoFromIndex(ctx, repo, usedBlobs, &stats, printer)
+	keepBlobs, indexPack, err := packInfoFromIndex(ctx, repo, usedBlobs, treeGroups, &stats, printer)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +208,11 @@ func PlanPrune(ctx context.Context, opts PruneOptions, repo *Repository, getUsed
 	return &plan, nil
 }
 
-func packInfoFromIndex(ctx context.Context, idx restic.ListBlobser, usedBlobs *index.AssociatedSet[uint8], stats *PruneStats, printer restic.Printer) (*index.AssociatedSet[uint8], map[restic.ID]packInfo, error) {
+// packInfoFromIndex collects the usage information of each pack from the index.
+// For a grouped prune (treeGroups is not nil) it also records which packs hold
+// used tree blobs of more than one group. A tree blob without an entry in
+// treeGroups belongs to the shared bucket (group 0).
+func packInfoFromIndex(ctx context.Context, idx restic.ListBlobser, usedBlobs *index.AssociatedSet[uint8], treeGroups map[restic.BlobHandle]uint32, stats *PruneStats, printer restic.Printer) (*index.AssociatedSet[uint8], map[restic.ID]packInfo, error) {
 	// iterate over all blobs in index to find out which blobs are duplicates
 	// The counter in usedBlobs describes how many instances of the blob exist in the repository index
 	// Thus 0 == blob is missing, 1 == blob exists once, >= 2 == duplicates exist
@@ -272,6 +298,9 @@ func packInfoFromIndex(ctx context.Context, idx restic.ListBlobser, usedBlobs *i
 		case dupCount == 1: // used blob, not duplicate
 			ip.usedSize += size
 			ip.usedBlobs++
+			if treeGroups != nil && h.Type == restic.TreeBlob {
+				ip.addTreeGroup(treeGroups[h])
+			}
 
 			stats.Size.Used += size
 			stats.Blobs.Used++
@@ -321,6 +350,9 @@ func packInfoFromIndex(ctx context.Context, idx restic.ListBlobser, usedBlobs *i
 				ip.usedBlobs++
 				ip.unusedSize -= size
 				ip.unusedBlobs--
+				if treeGroups != nil && bh.Type == restic.TreeBlob {
+					ip.addTreeGroup(treeGroups[bh])
+				}
 				// same for the global statistics
 				stats.Size.Used += size
 				stats.Blobs.Used++
@@ -459,11 +491,17 @@ func decidePackAction(ctx context.Context, opts PruneOptions, repo *Repository, 
 			stats.Packs.Keep++
 
 		case p.unusedBlobs == 0 && p.tpe != restic.InvalidBlob && !mustCompress:
-			if packSize >= int64(targetPackSize) {
+			switch {
+			case packSize < int64(targetPackSize):
+				repackSmallCandidates = append(repackSmallCandidates, packInfoWithID{ID: id, packInfo: p, mustCompress: mustCompress, regroup: p.mixedTreeGroups})
+			case p.mixedTreeGroups:
+				// All blobs in pack are used, but the tree blobs belong to several
+				// groups => repack to give each group its own packs. The repacked
+				// packs hold a single group each, so this happens once per pack.
+				repackCandidates = append(repackCandidates, packInfoWithID{ID: id, packInfo: p, mustCompress: mustCompress, regroup: true})
+			default:
 				// All blobs in pack are used and not mixed => keep pack!
 				stats.Packs.Keep++
-			} else {
-				repackSmallCandidates = append(repackSmallCandidates, packInfoWithID{ID: id, packInfo: p, mustCompress: mustCompress})
 			}
 
 		default:
@@ -511,10 +549,37 @@ func decidePackAction(ctx context.Context, opts PruneOptions, repo *Repository, 
 		}
 	}
 
+	// A small pack whose tree blobs belong to a single group can only be merged
+	// with other small packs of that group. Without such a pack, repacking it
+	// would recreate it unchanged, so keep it.
+	smallPacksPerGroup := make(map[uint32]int)
+	for _, p := range repackSmallCandidates {
+		if p.hasTreeGroup && !p.regroup {
+			smallPacksPerGroup[p.treeGroup]++
+		}
+	}
+	mergeableSmallCandidates := repackSmallCandidates[:0]
+	for _, p := range repackSmallCandidates {
+		if p.hasTreeGroup && !p.regroup && smallPacksPerGroup[p.treeGroup] < 2 {
+			stats.Packs.Keep++
+			continue
+		}
+		mergeableSmallCandidates = append(mergeableSmallCandidates, p)
+	}
+	repackSmallCandidates = mergeableSmallCandidates
+
 	if len(repackSmallCandidates) < 10 {
 		// too few small files to be worth the trouble, this also prevents endlessly repacking
 		// if there is just a single pack file below the target size
-		stats.Packs.Keep += uint(len(repackSmallCandidates))
+		for _, p := range repackSmallCandidates {
+			if p.regroup {
+				// a small pack mixing groups ends up in single-group packs, so
+				// repacking it cannot repeat endlessly
+				repackCandidates = append(repackCandidates, p)
+			} else {
+				stats.Packs.Keep++
+			}
+		}
 	} else {
 		repackCandidates = append(repackCandidates, repackSmallCandidates...)
 	}
@@ -524,11 +589,15 @@ func decidePackAction(ctx context.Context, opts PruneOptions, repo *Repository, 
 	// Instead of unused[i] / used[i] > unused[j] / used[j] we use
 	// unused[i] * used[j] > unused[j] * used[i] as uint32*uint32 < uint64
 	// Moreover packs containing trees and too short packs are sorted to the beginning
+	// Fully used packs that are only regrouped are sorted to the end: repacking
+	// them frees no space, so they must not use up the repack size limit first.
 	debug.Log("%d candidate packfiles to repack", len(repackCandidates))
 	sort.Slice(repackCandidates, func(i, j int) bool {
 		pi := repackCandidates[i].packInfo
 		pj := repackCandidates[j].packInfo
 		switch {
+		case repackCandidates[i].regroup != repackCandidates[j].regroup:
+			return repackCandidates[j].regroup
 		case pi.tpe != restic.DataBlob && pj.tpe == restic.DataBlob:
 			return true
 		case pj.tpe != restic.DataBlob && pi.tpe == restic.DataBlob:
@@ -541,8 +610,12 @@ func decidePackAction(ctx context.Context, opts PruneOptions, repo *Repository, 
 		return pi.unusedSize*pj.usedSize > pj.unusedSize*pi.usedSize
 	})
 
-	repack := func(id restic.ID, p packInfo) {
+	repack := func(id restic.ID, p packInfo, regroup bool) {
 		repackPacks.Insert(id)
+		if regroup {
+			stats.Packs.Regroup++
+			stats.Size.Regroup += p.unusedSize + p.usedSize
+		}
 		stats.Blobs.Repack += p.unusedBlobs + p.usedBlobs
 		stats.Size.Repack += p.unusedSize + p.usedSize
 		stats.Blobs.Repackrm += p.unusedBlobs
@@ -568,14 +641,14 @@ func decidePackAction(ctx context.Context, opts PruneOptions, repo *Repository, 
 
 		case p.tpe != restic.DataBlob, p.mustCompress:
 			// repacking non-data packs / uncompressed-trees is only limited by repackSize
-			repack(p.ID, p.packInfo)
+			repack(p.ID, p.packInfo, p.regroup)
 
 		case reachedUnusedSizeAfter && packIsLargeEnough:
 			// for all other packs stop repacking if tolerated unused size is reached.
 			stats.Packs.Keep++
 
 		default:
-			repack(p.ID, p.packInfo)
+			repack(p.ID, p.packInfo, p.regroup)
 		}
 	}
 
