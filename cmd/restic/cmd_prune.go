@@ -282,6 +282,11 @@ func printPruneStats(printer restic.Printer, stats repository.PruneStats) error 
 
 	printer.V("to keep:      %10d packs", stats.Packs.Keep)
 	printer.V("to repack:    %10d packs", stats.Packs.Repack)
+	if stats.Packs.Regroup > 0 {
+		// subset of the packs to repack: fully used packs that are only
+		// rewritten because their tree blobs belong to several groups
+		printer.V("to regroup:   %10d packs / %s", stats.Packs.Regroup, ui.FormatBytes(stats.Size.Regroup))
+	}
 	printer.V("to delete:    %10d packs", stats.Packs.Remove)
 	if stats.Packs.Unref > 0 {
 		printer.V("to delete:    %10d unreferenced packs\n\n", stats.Packs.Unref)

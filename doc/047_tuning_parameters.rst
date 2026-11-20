@@ -139,10 +139,13 @@ match the ``--group-by`` value the clients use for ``backup`` (default
 ``host,paths``). Data blobs and deduplication are unchanged, and the produced
 repository remains fully compatible with older restic versions.
 
-Grouping applies to the tree blobs that ``prune`` repacks. Tree blobs in pack
-files that are not repacked stay where they are, so an existing repository is
-regrouped gradually. A later ``prune`` without the option mixes the groups
-again in the pack files it repacks.
+Grouping applies to the tree blobs that ``prune`` repacks. In addition, metadata
+pack files that mix several groups are repacked even when all their blobs are
+still in use. An existing repository is therefore regrouped by the first
+``prune`` runs that use the option, which rewrites most of its metadata pack
+files once. This happens after all other repacking and within the
+``--max-repack-size`` limit. A later ``prune`` without the option mixes the
+groups again in the pack files it repacks.
 
 Grouping is limited to 256 groups, as each group holds an open temporary pack
 file while repacking. When there are more groups, ``prune`` prints a warning
