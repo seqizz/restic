@@ -147,10 +147,13 @@ files once. This happens after all other repacking and within the
 ``--max-repack-size`` limit. A later ``prune`` without the option mixes the
 groups again in the pack files it repacks.
 
-Grouping is limited to 256 groups, as each group holds an open temporary pack
-file while repacking. When there are more groups, ``prune`` prints a warning
-and does not group. A tree blob that is referenced by several groups is stored
-with one of them.
+The number of groups that get their own pack files is limited to 256, as each of
+them holds an open temporary pack file while repacking. When there are more
+groups, the largest ones by number of tree blobs get their own pack files and
+the remaining ones share common pack files. Groups that already have their own
+pack files are preferred over groups of similar size. This avoids repeated
+repacking in repositories with many groups. A tree blob that is referenced by
+several groups is stored with one of them.
 
 With this option ``prune`` keeps the group of every tree blob in memory. This
 increases its memory usage for repositories that contain a lot of metadata.

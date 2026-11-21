@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/restic/restic/internal/restic"
@@ -19,6 +20,123 @@ func dataHandle(seed byte) restic.BlobHandle {
 	var id restic.ID
 	id[0] = seed
 	return restic.BlobHandle{ID: id, Type: restic.DataBlob}
+}
+
+// buildTreeGroups assigns `count` distinct tree blobs to each listed group id.
+// The seed keeps handles unique across groups.
+func buildTreeGroups(perGroup map[uint32]int) map[restic.BlobHandle]uint32 {
+	tg := make(map[restic.BlobHandle]uint32)
+	seed := byte(0)
+	for g, n := range perGroup {
+		for i := 0; i < n; i++ {
+			tg[treeHandle(seed)] = g
+			seed++
+		}
+	}
+	return tg
+}
+
+func TestDemoteSmallGroups(t *testing.T) {
+	// four groups with 1/3/2/3 tree blobs; keep the two largest. Ranking is by
+	// count, tie broken by ascending id, so groups 2 and 4 (both count 3) win
+	// and are remapped to the dense range 1..2; groups 1 and 3 are dropped so
+	// their blobs fall back to the shared bucket.
+	tg := buildTreeGroups(map[uint32]int{1: 1, 2: 3, 3: 2, 4: 3})
+	demoteSmallGroups(tg, nil, 2)
+
+	counts := make(map[uint32]int)
+	for _, g := range tg {
+		counts[g]++
+	}
+
+	// only the dense ids 1 and 2 must survive, with the original counts (3 each)
+	rtest.Equals(t, map[uint32]int{1: 3, 2: 3}, counts)
+}
+
+func TestDemoteSmallGroupsNoOp(t *testing.T) {
+	// budget >= number of groups: nothing is dropped, but ids are still
+	// remapped to a dense 1..K range (here already dense, so unchanged counts).
+	tg := buildTreeGroups(map[uint32]int{1: 2, 2: 1, 3: 4})
+	demoteSmallGroups(tg, nil, 3)
+
+	counts := make(map[uint32]int)
+	for _, g := range tg {
+		counts[g]++
+	}
+	rtest.Equals(t, map[uint32]int{1: 4, 2: 2, 3: 1}, counts)
+}
+
+func TestDemoteSmallGroupsPrefersLocalized(t *testing.T) {
+	countGroups := func(tg map[restic.BlobHandle]uint32) map[uint32]int {
+		counts := make(map[uint32]int)
+		for _, g := range tg {
+			counts[g]++
+		}
+		return counts
+	}
+
+	// group 1 is larger, but all tree blobs of group 2 are already stored in
+	// pack files of their own, so group 2 is kept (weight 6 against 4)
+	tg := buildTreeGroups(map[uint32]int{1: 4, 2: 3})
+	demoteSmallGroups(tg, map[uint32]int{2: 3}, 1)
+	rtest.Equals(t, map[uint32]int{1: 3}, countGroups(tg))
+
+	// a group more than twice as large is kept instead (weight 7 against 6)
+	tg = buildTreeGroups(map[uint32]int{1: 7, 2: 3})
+	demoteSmallGroups(tg, map[uint32]int{2: 3}, 1)
+	rtest.Equals(t, map[uint32]int{1: 7}, countGroups(tg))
+}
+
+// fakePackBlob is a minimal restic.PackBlob that only carries the pack and
+// the blob handle.
+type fakePackBlob struct {
+	pack restic.ID
+	h    restic.BlobHandle
+}
+
+func (b fakePackBlob) PackID() restic.ID                  { return b.pack }
+func (b fakePackBlob) Handle() restic.BlobHandle          { return b.h }
+func (b fakePackBlob) CiphertextLength() uint             { return 0 }
+func (b fakePackBlob) UncompressedCiphertextLength() uint { return 0 }
+func (b fakePackBlob) PlaintextLength() uint              { return 0 }
+func (b fakePackBlob) IsCompressed() bool                 { return false }
+
+// fakeBlobLister is a restic.ListBlobser over a fixed list of blobs.
+type fakeBlobLister []fakePackBlob
+
+func (l fakeBlobLister) ListBlobs(_ context.Context, fn func(restic.PackBlob)) error {
+	for _, b := range l {
+		fn(b)
+	}
+	return nil
+}
+
+func TestLocalizedTreeBlobs(t *testing.T) {
+	packA, packB, packC := restic.ID{1}, restic.ID{2}, restic.ID{3}
+	treeGroups := map[restic.BlobHandle]uint32{
+		treeHandle(1): 1,
+		treeHandle(2): 1,
+		treeHandle(3): 2,
+		treeHandle(4): 2,
+		treeHandle(5): 1,
+	}
+	idx := fakeBlobLister{
+		// group 1 only, the tree blob without a group is unused
+		{pack: packA, h: treeHandle(1)},
+		{pack: packA, h: treeHandle(2)},
+		{pack: packA, h: treeHandle(9)},
+		// group 2 only
+		{pack: packB, h: treeHandle(3)},
+		// groups 1 and 2 mixed
+		{pack: packC, h: treeHandle(4)},
+		{pack: packC, h: treeHandle(5)},
+		// data blobs have no group
+		{pack: restic.ID{4}, h: dataHandle(1)},
+	}
+
+	localized, err := localizedTreeBlobs(context.TODO(), idx, treeGroups)
+	rtest.OK(t, err)
+	rtest.Equals(t, map[uint32]int{1: 2, 2: 1}, localized)
 }
 
 // fakeBlobSet is a minimal restic.FindBlobSet backed by a map, used to verify

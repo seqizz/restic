@@ -337,14 +337,6 @@ func getUsedBlobs(ctx context.Context, repo restic.Repository, usedBlobs restic.
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-
-		// Each group keeps a temporary pack file open while repacking, so their
-		// number is limited.
-		if len(keys) > maxTreeGroups {
-			printer.E("Warning: grouping by %q yields %d groups, at most %d are supported. Repacking without grouping.",
-				groupBy.String(), len(keys), maxTreeGroups)
-			grouping = false
-		}
 	}
 
 	printer.P("finding data that is still in use for %d snapshots", len(snapshots))
@@ -383,8 +375,115 @@ func getUsedBlobs(ctx context.Context, repo restic.Repository, usedBlobs restic.
 			return nil, errors.Fatalf("failed finding blobs: %v", err)
 		}
 	}
-	printer.P("clustering repacked tree blobs into %d group(s) by %q", len(keys), groupBy.String())
-	return gs.treeGroups, nil
+	treeGroups := gs.treeGroups
+
+	// Each group with its own pack files keeps a temporary pack file open
+	// while repacking, so their number is limited.
+	if len(keys) <= maxTreeGroups {
+		printer.P("clustering repacked tree blobs into %d group(s) by %q", len(keys), groupBy.String())
+		return treeGroups, nil
+	}
+
+	// More groups than can be kept open: keep only the largest ones by tree-blob
+	// count (a proxy for metadata footprint, which dominates client cache) and
+	// demote the rest to the shared bucket (group 0). Tree blobs that are already
+	// stored in pack files of their group alone count twice. A group that enters
+	// the selection has its tree blobs spread over shared pack files, which all
+	// have to be repacked. In repositories with many groups of similar size the
+	// extra weight keeps the selection stable between runs.
+	printer.P("grouping by %q yields %d groups, the %d largest get their own pack files, the others share pack files",
+		groupBy.String(), len(keys), maxTreeGroups)
+	localized, err := localizedTreeBlobs(ctx, repo, treeGroups)
+	if err != nil {
+		return nil, err
+	}
+	demoteSmallGroups(treeGroups, localized, maxTreeGroups)
+
+	return treeGroups, nil
+}
+
+// groupRank pairs a group id with its weight, used to rank groups when there
+// are more of them than can be localized at once.
+type groupRank struct {
+	id uint32
+	n  int
+}
+
+// localizedTreeBlobs returns for each group the number of its tree blobs that
+// are stored in pack files holding tree blobs of that group only.
+func localizedTreeBlobs(ctx context.Context, idx restic.ListBlobser, treeGroups map[restic.BlobHandle]uint32) (map[uint32]int, error) {
+	type packGroup struct {
+		group uint32
+		blobs int
+		mixed bool
+	}
+	packs := make(map[restic.ID]packGroup)
+	err := idx.ListBlobs(ctx, func(blob restic.PackBlob) {
+		group, ok := treeGroups[blob.Handle()]
+		if !ok {
+			return
+		}
+		id := blob.PackID()
+		pg, seen := packs[id]
+		if seen && pg.group != group {
+			pg.mixed = true
+		}
+		pg.group = group
+		pg.blobs++
+		packs[id] = pg
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	localized := make(map[uint32]int)
+	for _, pg := range packs {
+		if !pg.mixed {
+			localized[pg.group] += pg.blobs
+		}
+	}
+	return localized, nil
+}
+
+// demoteSmallGroups keeps only the maxGroups largest groups in treeGroups,
+// remapping their ids to a dense 1..maxGroups range, and drops every other
+// tree blob so it falls back to the shared bucket (group 0) during repacking.
+// Groups are ranked by tree-blob count, with the blobs counted in localized
+// weighing twice. It mutates treeGroups in place.
+func demoteSmallGroups(treeGroups map[restic.BlobHandle]uint32, localized map[uint32]int, maxGroups int) {
+	counts := make(map[uint32]int)
+	for _, g := range treeGroups {
+		counts[g]++
+	}
+	ranked := make([]groupRank, 0, len(counts))
+	for id, n := range counts {
+		// a blob stored in several pack files is listed once per pack file
+		ranked = append(ranked, groupRank{id: id, n: n + min(localized[id], n)})
+	}
+	// largest first, tie-break by id for determinism
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].n != ranked[j].n {
+			return ranked[i].n > ranked[j].n
+		}
+		return ranked[i].id < ranked[j].id
+	})
+
+	// remap the top maxGroups group ids to dense 1..K; ids not in the map are
+	// demoted to the shared bucket
+	remap := make(map[uint32]uint32, maxGroups)
+	for rank, r := range ranked {
+		if rank >= maxGroups {
+			break
+		}
+		remap[r.id] = uint32(rank) + 1
+	}
+	for bh, g := range treeGroups {
+		if ng, ok := remap[g]; ok {
+			treeGroups[bh] = ng
+		} else {
+			delete(treeGroups, bh)
+		}
+	}
 }
 
 // groupingSet wraps the used-blob set and records, for every tree blob, the

@@ -263,7 +263,7 @@ func TestPruneRepackSmallerThanSmoke(t *testing.T) {
 // TestPruneGroupBy exercises `prune --repack-group-by` end to end: it repacks tree
 // blobs of two snapshot groups (by host) and verifies that the repository stays
 // sound and fully readable afterwards. The grouping mechanics themselves are
-// covered by the unit tests (groupingSet, packer buckets);
+// covered by the unit tests (demoteSmallGroups, groupingSet, packer buckets);
 // here we only make sure the command path works and does not lose blobs.
 func TestPruneGroupBy(t *testing.T) {
 	env, cleanup := withTestEnvironment(t)
